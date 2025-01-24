@@ -1,7 +1,7 @@
 ### Configure the project
 
 ```
-git clone -b v5.4-beta1 https://github.com/espressif/esp-idf.git
+git clone -b v5.4-beta1 --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf
 ./install.sh
 ./export.sh
