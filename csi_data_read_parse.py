@@ -53,10 +53,16 @@ LEGACY_LLTF_MASK[27:27+10] = False
 LEGACY_LLTF_MASK[63:] = False
 
 
-LLTF_MASK = np.ones(64, dtype=bool)
-LLTF_MASK[:6] = False
-LLTF_MASK[32:33] = False
-LLTF_MASK[59:] = False
+C6_MASK = np.ones(64, dtype=bool)
+C6_MASK[:6] = False
+C6_MASK[32:33] = False
+C6_MASK[59:] = False
+
+
+C5_MASK = np.ones(53, dtype=bool)
+C5_MASK[25:27] = False
+
+
 
 # LLTF: 52
 csi_vaid_subcarrier_color += [(i * color_step, 0, 0) for i in range(1,  26 // CSI_VAID_SUBCARRIER_INTERVAL + 2)]
@@ -148,9 +154,9 @@ def csi_data_read_parse(self, port: str, mat_writer):
         print('valid', int(csi_data[-2]), 'rssi', int(csi_data[3]), 'ch', int(csi_data[6]), 'ts', int(csi_data[7]))
 
         if len(z) == 64:
-            x = np.squeeze(z[LLTF_MASK])[:26]
+            x = np.squeeze(z[C6_MASK])[:26] #upper 26 sub-carriers are noise on C6
         else:
-            x = np.squeeze(z)
+            x = np.squeeze(z[C5_MASK])
 
         if mat_writer is not None:
             csis.append(x)
@@ -167,6 +173,10 @@ def csi_data_read_parse(self, port: str, mat_writer):
         '''
 
         y = np.abs(x)
+
+        y /= np.mean(y) #remove AGC effect
+        self.window.plotWidget_ted.setYRange(0, 2, padding=0)
+
         self.window.plotWidget_ted.setXRange(0, len(y), padding=0)
         self.window.csi_data_array = y
 
