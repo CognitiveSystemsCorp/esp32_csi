@@ -59,8 +59,6 @@ C6_MASK[32:33] = False
 C6_MASK[59:] = False
 
 
-C5_MASK = np.ones(53, dtype=bool)
-C5_MASK[25:27] = False
 
 
 
@@ -108,6 +106,21 @@ class csi_data_graphical_window(QWidget):
         #self.subthread.terminate()
         self.subthread.wait()
 
+def sign_extend(value : np.int16, bits : int):
+    sign_bit = 1 << (bits - 1)
+    return (value & (sign_bit - 1)) - (value & sign_bit)
+
+def parse_12bit(raw):
+    lraw = len(raw)
+    data = np.empty(lraw, dtype=np.float32)
+    for i in range(0, lraw, 2):
+        data[i] = sign_extend(raw[i], 12)
+        data[i+1 ]= sign_extend(raw[i+1],12)
+    data = data.view(np.complex64)
+    return data
+
+
+
 def csi_data_read_parse(self, port: str, mat_writer):
     ser = serial.Serial(port=port, baudrate=115200,
                         bytesize=8, parity='N', stopbits=1)
@@ -133,30 +146,26 @@ def csi_data_read_parse(self, port: str, mat_writer):
         csv_reader = csv.reader(StringIO(strings))
         csi_data = next(csv_reader)
 
-        if len(csi_data) != DATA_COLUMNS_NUM:
-            print("element number is not equal")
-            continue
-        
         try:
             csi_raw_data = json.loads(csi_data[-1])
         except json.JSONDecodeError:
             print("data is incomplete")
             continue
 
-        if len(csi_raw_data) != 128 and len(csi_raw_data) != 106 and len(csi_raw_data) != 384:
-            print(f"element number is not equal: {len(csi_raw_data)}")
-            continue
+        if len(csi_raw_data) != 106:
+            x = np.array(csi_raw_data, dtype=np.float32)
+            z = x.reshape(-1, 2).view(np.complex64)
+        else:
+            buf = np.array(csi_raw_data, dtype=np.int8)
+            raw = np.frombuffer(buf, count=52, dtype='<h')
+            z = parse_12bit(raw)
 
-        x = np.array(csi_raw_data, dtype=np.float32)
-        z = x.reshape(-1, 2).view(np.complex64)
-
-        #print(csi_data[:-1])
-        print('valid', int(csi_data[-2]), 'rssi', int(csi_data[3]), 'ch', int(csi_data[6]), 'ts', int(csi_data[7]))
+        print('valid', int(csi_data[-2]), z.shape) #, 'rssi', int(csi_data[3]), 'ch', int(csi_data[6]), 'ts', int(csi_data[7]))
 
         if len(z) == 64:
             x = np.squeeze(z[C6_MASK])[:26] #upper 26 sub-carriers are noise on C6
         else:
-            x = np.squeeze(z[C5_MASK])
+            x = np.squeeze(z)
 
         if mat_writer is not None:
             csis.append(x)
@@ -174,7 +183,7 @@ def csi_data_read_parse(self, port: str, mat_writer):
 
         y = np.abs(x)
 
-        y /= np.mean(y) #remove AGC effect
+        y /= np.mean(y) #reduce AGC effect
         self.window.plotWidget_ted.setYRange(0, 2, padding=0)
 
         self.window.plotWidget_ted.setXRange(0, len(y), padding=0)
@@ -198,7 +207,7 @@ class SubThread (QThread):
         csi_data_read_parse(self, self.serial_port, self.save_file_name)
 
     def __del__(self):        
-        print('here')
+        pass
         #self.log_file_fd.close()
 
 

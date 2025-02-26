@@ -90,6 +90,9 @@ void wifi_init_csi() {
     wifi_csi_config_t  csi_config = {
         .enable = true,                    /**< enable to acquire CSI */
         .acquire_csi_legacy = true,        /**< enable to acquire L-LTF when receiving a 11g PPDU */
+#if CONFIG_SOC_WIFI_MAC_VERSION_NUM == 3
+        .acquire_csi_force_lltf = true,
+#endif
         .acquire_csi_ht20 = false,         /**< enable to acquire HT-LTF when receiving an HT20 PPDU */
         .acquire_csi_ht40 = false,         /**< enable to acquire HT-LTF when receiving an HT40 PPDU */
         .acquire_csi_su = false,            /**< enable to acquire HE-LTF when receiving an HE20 SU PPDU */
