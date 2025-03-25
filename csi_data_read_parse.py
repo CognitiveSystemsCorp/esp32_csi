@@ -160,7 +160,8 @@ def csi_data_read_parse(self, port: str, mat_writer):
             raw = np.frombuffer(buf, count=52, dtype='<h')
             z = parse_12bit(raw)
 
-        print('valid', int(csi_data[-2]), z.shape) #, 'rssi', int(csi_data[3]), 'ch', int(csi_data[6]), 'ts', int(csi_data[7]))
+        valid = int(csi_data[-2])
+        print('valid', valid, z.shape) #, 'rssi', int(csi_data[3]), 'ch', int(csi_data[6]), 'ts', int(csi_data[7]))
 
         if len(z) == 64:
             x = np.squeeze(z[C6_MASK])[:26] #upper 26 sub-carriers are noise on C6
@@ -168,7 +169,8 @@ def csi_data_read_parse(self, port: str, mat_writer):
             x = np.squeeze(z)
 
         if mat_writer is not None:
-            csis.append(x)
+            inx = np.array(csi_raw_data, dtype=np.int8)
+            csis.append(inx) # x
 
         '''
         unwrapped = np.unwrap(np.angle(x))
@@ -183,8 +185,8 @@ def csi_data_read_parse(self, port: str, mat_writer):
 
         y = np.abs(x)
 
-        y /= np.mean(y) #reduce AGC effect
-        self.window.plotWidget_ted.setYRange(0, 2, padding=0)
+        #y /= np.mean(y) #reduce AGC effect
+        self.window.plotWidget_ted.setYRange(min(y), max(y), padding=0)
 
         self.window.plotWidget_ted.setXRange(0, len(y), padding=0)
         self.window.csi_data_array = y
