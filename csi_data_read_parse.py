@@ -227,7 +227,7 @@ class csi_data_graphical_window(QMainWindow):
             snr = self.snr_fn(csi_input)
             rssi = data_info['rssi']
             ch = data_info['ch']
-            mot = data_info['mot']
+            vld = data_info['vld']
             
             if np.all(y == 0):
                 continue
@@ -245,7 +245,7 @@ class csi_data_graphical_window(QMainWindow):
                 plot_data['last_time'] = current_time
             
             rate_str = f"{plot_data['rate']:.1f}"
-            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {rssi} dBm, Ch: {ch}, Vld: {mot}, Rate: {rate_str} Hz SNR= {snr:.1f} dB)")
+            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {rssi} dBm, Ch: {ch}, Valid: {vld}, Rate: {rate_str} Hz SNR= {snr:.1f} dB)")
             plot_data['plot'].setXRange(0, len(y), padding=0)
 
             H_min = float(np.min(y))
@@ -358,9 +358,7 @@ def csi_data_read_parse(self, port: str, mat_writer):
             z = parse_12bit(raw)
 
         try:
-            valid = int(csi_data[-2])
-            comp = float(csi_data[1])
-            mot = float(csi_data[2])
+            valid = int(csi_data[2])
             ch = float(csi_data[8])
             tx_mac = csi_data[4]
             rssi = int(csi_data[5])
@@ -369,7 +367,9 @@ def csi_data_read_parse(self, port: str, mat_writer):
             continue
 
         if len(z) == 64:
-            x = np.squeeze(z[C6_MASK])[:26] #upper 26 sub-carriers are noise on C6
+            x = np.squeeze(z[C6_MASK])
+            if valid == 0:
+                x = x[:26] #upper 26 sub-carriers are noise on C6
         else:
             x = np.squeeze(z)
 
@@ -402,7 +402,7 @@ def csi_data_read_parse(self, port: str, mat_writer):
             'y': y,
             'rssi': rssi,
             'ch': ch,
-            'mot': mot
+            'vld': valid 
         }
 
     ser.close()
