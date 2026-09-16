@@ -33,6 +33,7 @@ static volatile bool peer_discovered = false;
 static uint32_t ping_seq = 0;
 
 
+wifi_ap_record_t ap_info  = {0};
 
 
 // Wi-Fi event handler
@@ -73,7 +74,7 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     }
 
     const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
-    const uint8_t *dest_mac_to_print = is_peer_frame ? info->mac : info->dmac;
+    const uint8_t *dest_mac_to_print = is_peer_frame ? info->mac : ap_info.bssid;
 
     ets_printf("CSI_DATA,%u,%d,"MACSTR","MACSTR",%d,%d,%d,%d,%u,%u,%u,%u",
         0, rx_ctrl->rx_channel_estimate_info_vld, MAC2STR(info->mac), MAC2STR(dest_mac_to_print), rx_ctrl->rssi, rx_ctrl->rate,
@@ -189,7 +190,6 @@ void send_espnow_ping(void) {
 // Function to transmit a raw Wi-Fi frame
 void send_raw_frame() {
 
-    wifi_ap_record_t ap_info  = {0};
     esp_wifi_sta_get_ap_info(&ap_info);
 
    typedef struct {

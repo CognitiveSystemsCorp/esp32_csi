@@ -41,22 +41,115 @@ import time
 
 from scipy.signal import butter, filtfilt
 
-def snr_simple(csi):
+def snr_original(csi):
+    """
+    Original SNR estimation algorithm using Butterworth low-pass filtering.
+    """
+    if np.iscomplexobj(csi):
+        csi = np.abs(csi)
+    else:
+        csi = np.asarray(csi, dtype=np.float64)
+    if len(csi) < 4:
+        return 0.0
+
     # Design Butterworth filter (4th order, cutoff 0.3)
     b, a = butter(4, 0.3)
-    
-    # Apply zero-phase filtering
-    csi_filt = filtfilt(b, a, csi)
-    
+    try:
+        csi_filt = filtfilt(b, a, csi)
+    except ValueError:
+        padlen = max(len(a), len(b))
+        csi_filt = filtfilt(b, a, csi, padlen=padlen)
+
     # Calculate signal and noise power
     s = np.sum(csi_filt)
     n = np.sum(np.abs(csi_filt - csi))
-    
+
     # Compute SNR in dB
     csi_snr = 0.0
     if n != 0:
         csi_snr = 10 * np.log10(s / n)
-    return csi_snr
+    return float(csi_snr)
+
+
+# snr_simple is the original algorithm (default)
+snr_simple = snr_original
+
+
+def snr_cir_delay_domain(csi, max_delay_taps=6):
+    """
+    Computes CSI SNR using CIR delay-domain noise estimation (Algorithm 1).
+    Transforms CFR to CIR via IFFT, extracts noise variance from taps beyond
+    the channel delay spread, and computes SNR in dB without distorting
+    frequency-selective multipath fading.
+    """
+    csi_arr = np.asarray(csi)
+    n_subcarriers = len(csi_arr)
+    if n_subcarriers < 4:
+        return 0.0
+
+    max_taps = max(2, min(max_delay_taps, n_subcarriers // 4))
+
+    # 1. Transform Channel Frequency Response (CFR) to Channel Impulse Response (CIR)
+    cir = np.fft.ifft(csi_arr)
+    cir_power = np.abs(cir) ** 2
+
+    # 2. Estimate noise power from delay taps beyond channel delay spread
+    noise_taps = cir_power[max_taps:n_subcarriers - max(1, max_taps // 2)]
+    if len(noise_taps) == 0:
+        noise_taps = cir_power[max_taps:]
+
+    p_noise = float(np.mean(noise_taps)) if len(noise_taps) > 0 else 1e-12
+    p_total = float(np.mean(cir_power))
+
+    # 3. Compute signal power and SNR in dB
+    p_signal = max(p_total - p_noise, 1e-12)
+    p_noise = max(p_noise, 1e-12)
+
+    return float(10.0 * np.log10(p_signal / p_noise))
+
+
+def snr_mad_robust(csi):
+    """
+    Computes CSI SNR using Median Absolute Deviation (MAD) of adjacent
+    subcarrier differences (Algorithm 3). Robust to multipath shape and
+    free of filter boundary distortion.
+    """
+    if np.iscomplexobj(csi):
+        y = np.abs(csi)
+    else:
+        y = np.asarray(csi, dtype=np.float64)
+    if len(y) < 4:
+        return 0.0
+
+    # First-order difference across adjacent subcarriers
+    diff = np.diff(y)
+    mad = np.median(np.abs(diff - np.median(diff)))
+    sigma_n = mad / (0.6745 * np.sqrt(2.0))
+    p_noise = max(float(sigma_n ** 2), 1e-12)
+
+    p_total = float(np.mean(y ** 2))
+    p_signal = max(p_total - p_noise, 1e-12)
+
+    return float(10.0 * np.log10(p_signal / p_noise))
+
+
+SNR_ALGORITHMS = {
+    'original': snr_original,
+    'cir': snr_cir_delay_domain,
+    'mad': snr_mad_robust,
+}
+
+SNR_ALGO_MAP = {
+    'original': 'original',
+    'simple': 'original',
+    'default': 'original',
+    'cir': 'cir',
+    '1': 'cir',
+    'algo1': 'cir',
+    'mad': 'mad',
+    '3': 'mad',
+    'algo3': 'mad',
+}
 
 
 
@@ -92,10 +185,13 @@ CSI_DATA_INDEX = 1  # buffer size
 DATA_COLUMNS_NUM = 13
 
 class csi_data_graphical_window(QMainWindow):
-    def __init__(self):
+    def __init__(self, snr_algo='original'):
         super().__init__()
 
-        self.setWindowTitle("ESP32 CSI Viewer")
+        self.snr_algo = snr_algo
+        self.snr_fn = SNR_ALGORITHMS.get(snr_algo, snr_simple)
+
+        self.setWindowTitle(f"ESP32 CSI Viewer (SNR: {self.snr_algo})")
         self.resize(800, 900)
 
         self.graphWidget = pq.GraphicsLayoutWidget()
@@ -147,8 +243,11 @@ class csi_data_graphical_window(QMainWindow):
     def update_data(self):
         for mac, data_info in list(self.latest_data.items()):
             y = data_info['y']
+            x = data_info.get('x', y)
 
-            snr = snr_simple(y)
+            # Algorithm 1 (CIR) operates best on complex CFR; others on amplitude y
+            csi_input = x if self.snr_algo == 'cir' else y
+            snr = self.snr_fn(csi_input)
             rssi = data_info['rssi']
             ch = data_info['ch']
             mot = data_info['mot']
@@ -322,6 +421,7 @@ def csi_data_read_parse(self, port: str, mat_writer):
             self.window.latest_data = {}
             
         self.window.latest_data[tx_mac] = {
+            'x': x,
             'y': y,
             'rssi': rssi,
             'ch': ch,
@@ -361,16 +461,20 @@ if __name__ == '__main__':
                         help="Serial port number of csv_recv device")
     parser.add_argument('-s', '--store', dest='store_file', action='store',
                         help="Save the data printed by the serial port to a file")
+    parser.add_argument('--snr-algo', dest='snr_algo', default='original',
+                        choices=['original', 'cir', 'mad', '1', '3', 'simple'],
+                        help="Algorithm for CSI SNR computation: 'original' (default, snr_simple Butterworth filter), 'cir' (Algorithm 1, delay-domain IFFT), 'mad' (Algorithm 3, robust MAD)")
 
     args = parser.parse_args()
     serial_port = args.port
     file_name = args.store_file
+    selected_algo = SNR_ALGO_MAP.get(str(args.snr_algo).lower(), 'original')
 
     app = QApplication(sys.argv)
 
 
 
-    window = csi_data_graphical_window()
+    window = csi_data_graphical_window(snr_algo=selected_algo)
     window.subthread = SubThread(window, serial_port, file_name)
     window.subthread.start()
 
