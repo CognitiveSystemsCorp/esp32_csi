@@ -1,14 +1,14 @@
 ### Configure the project
 
 ```
-git clone -b v5.4-beta1 --recursive https://github.com/espressif/esp-idf.git
+git clone -b v6.0.2 --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf
 ./install.sh
 ./export.sh
 cd ../
 ```
 
-`idf.py --preview set-target esp32c5`
+`idf.py set-target esp32c5`
 
 Open the project configuration menu (`idf.py menuconfig`).
 
@@ -18,7 +18,7 @@ In the `Project Configuration` menu:
     * Set `WiFi SSID`.
     * Set `WiFi Password`.
 
-### Build and Flash
+### Build and Flash on 2x boards
 
 Build the project and flash it to the board, then run the monitor tool to view the serial output:
 Run `idf.py -p PORT flash monitor` to build, flash and monitor the project.

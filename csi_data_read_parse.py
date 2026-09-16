@@ -69,36 +69,125 @@ csi_vaid_subcarrier_color += [(0, i * color_step, 0) for i in range(1,  26 // CS
 CSI_DATA_INDEX = 1  # buffer size
 DATA_COLUMNS_NUM = 13
 
-class csi_data_graphical_window(QWidget):
+class csi_data_graphical_window(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.resize(1280, 720)
-        self.plotWidget_ted = PlotWidget(self)
-        self.plotWidget_ted.setGeometry(QtCore.QRect(0, 0, 1280, 720))
+        self.setWindowTitle("ESP32 CSI Viewer")
+        self.resize(800, 900)
 
-        self.csi_data_array = np.zeros(53)
+        self.graphWidget = pq.GraphicsLayoutWidget()
+        self.setCentralWidget(self.graphWidget)
 
-        self.plotWidget_ted.setXRange(0, len(self.csi_data_array), padding=0)
-        self.plotWidget_ted.setYRange(0, 65)
-        #self.plotWidget_ted.addLegend()
-        self.plotWidget_ted.setBackground('w')
-        self.plotWidget_ted.setLabel('bottom', 'Carrier', units='')
-        self.plotWidget_ted.setLabel('left', 'Amplitude', units='')
- 
-
-        self.curve_list = []
-        for i in range(CSI_DATA_INDEX):
-            curve = self.plotWidget_ted.plot(
-                self.csi_data_array, name=str(i), pen=csi_vaid_subcarrier_color[i])
-            self.curve_list.append(curve)
+        self.mac_plots = {}
+        self.max_plots = 4
+        self.latest_data = {}
 
         self.timer = pq.QtCore.QTimer()
         self.timer.timeout.connect(self.update_data)
         self.timer.start(100)
 
+    def get_or_create_plot(self, mac):
+        if mac in self.mac_plots:
+            return self.mac_plots[mac]
+            
+        if len(self.mac_plots) >= self.max_plots:
+            return None
+            
+        plot = pq.PlotItem(title=f"ESP32 - MAC: {mac}")
+        plot.setLabel('bottom', 'Subcarriers')
+        plot.setLabel('left', 'Amplitude')
+        plot.showGrid(x=True, y=True)
+        
+        plot_data = {
+            'plot': plot,
+            'curves': [],
+            'y_min': float('inf'),
+            'y_max': float('-inf'),
+            'history_size': 20,
+            'packet_count': 0,
+            'last_time': time.time(),
+            'rate': 0.0
+        }
+        
+        self.mac_plots[mac] = plot_data
+
+        # Rebuild layout in sorted MAC order
+        self.graphWidget.clear()
+        sorted_macs = sorted(self.mac_plots.keys())
+        for i, m in enumerate(sorted_macs):
+            if i > 0:
+                self.graphWidget.nextRow()
+            self.graphWidget.addItem(self.mac_plots[m]['plot'])
+
+        return plot_data
+
     def update_data(self):
-        self.curve_list[0].setData(self.csi_data_array)
+        for mac, data_info in list(self.latest_data.items()):
+            y = data_info['y']
+            rssi = data_info['rssi']
+            ch = data_info['ch']
+            mot = data_info['mot']
+            
+            if np.all(y == 0):
+                continue
+
+            plot_data = self.get_or_create_plot(mac)
+            if not plot_data:
+                continue
+
+            plot_data['packet_count'] += 1
+            current_time = time.time()
+            elapsed = current_time - plot_data['last_time']
+            if elapsed >= 1.0:
+                plot_data['rate'] = plot_data['packet_count'] / elapsed
+                plot_data['packet_count'] = 0
+                plot_data['last_time'] = current_time
+            
+            rate_str = f"{plot_data['rate']:.1f}"
+            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {rssi} dBm, Ch: {ch}, Vld: {mot}, Rate: {rate_str} Hz)")
+            plot_data['plot'].setXRange(0, len(y), padding=0)
+
+            H_min = float(np.min(y))
+            H_max = float(np.max(y))
+            update_range = False
+            
+            if plot_data['y_min'] == float('inf') or H_min < plot_data['y_min']:
+                plot_data['y_min'] = H_min
+                update_range = True
+            else:
+                plot_data['y_min'] = 0.99 * plot_data['y_min'] + 0.01 * H_min
+                update_range = True
+                
+            if plot_data['y_max'] == float('-inf') or H_max > plot_data['y_max']:
+                plot_data['y_max'] = H_max
+                update_range = True
+            else:
+                plot_data['y_max'] = 0.99 * plot_data['y_max'] + 0.01 * H_max
+                update_range = True
+                
+            if update_range:
+                padding = (plot_data['y_max'] - plot_data['y_min']) * 0.05 if plot_data['y_max'] > plot_data['y_min'] else 0.1
+                plot_data['plot'].setYRange(plot_data['y_min'] - padding, plot_data['y_max'] + padding)
+
+            curves = plot_data['curves']
+            history_size = plot_data['history_size']
+            if not curves:
+                base_color = pq.intColor(0, hues=1, values=1, maxValue=255)
+                for h in range(history_size):
+                    alpha = int(255 * (1.0 - h / history_size))
+                    color = pq.mkColor(base_color)
+                    color.setAlpha(alpha)
+                    curve = plot_data['plot'].plot(np.zeros(len(y)), pen=pq.mkPen(color, width=2 if h == 0 else 1))
+                    curves.append(curve)
+
+            for h in range(history_size - 1, 0, -1):
+                x_data, y_data = curves[h-1].getData()
+                if y_data is not None:
+                    curves[h].setData(y_data)
+            curves[0].setData(y)
+            
+        self.latest_data.clear()
 
     def closeEvent(self,event):
         print('Closing')
@@ -143,8 +232,16 @@ def csi_data_read_parse(self, port: str, mat_writer):
         if index == -1:
             continue
 
+        if index != 0:
+            continue
+
         csv_reader = csv.reader(StringIO(strings))
         csi_data = next(csv_reader)
+
+        if len(csi_data) != 16:
+            print('len', len(csi_data))
+            continue
+
 
         try:
             csi_raw_data = json.loads(csi_data[-1])
@@ -160,8 +257,16 @@ def csi_data_read_parse(self, port: str, mat_writer):
             raw = np.frombuffer(buf, count=52, dtype='<h')
             z = parse_12bit(raw)
 
-        valid = int(csi_data[-2])
-        print('valid', valid, z.shape) #, 'rssi', int(csi_data[3]), 'ch', int(csi_data[6]), 'ts', int(csi_data[7]))
+        try:
+            valid = int(csi_data[-2])
+            comp = float(csi_data[1])
+            mot = float(csi_data[2])
+            ch = float(csi_data[8])
+            tx_mac = csi_data[4]
+            rssi = int(csi_data[5])
+        except Exception as e:
+            print(e)
+            continue
 
         if len(z) == 64:
             x = np.squeeze(z[C6_MASK])[:26] #upper 26 sub-carriers are noise on C6
@@ -183,13 +288,21 @@ def csi_data_read_parse(self, port: str, mat_writer):
         self.window.plotWidget_ted.setYRange(-np.pi/2, np.pi/2)
         '''
 
-        y = np.abs(x)
+        y = np.abs(x) # * comp
+
+        #y = y / np.mean(y)
 
         #y /= np.mean(y) #reduce AGC effect
-        self.window.plotWidget_ted.setYRange(min(y), max(y), padding=0)
 
-        self.window.plotWidget_ted.setXRange(0, len(y), padding=0)
-        self.window.csi_data_array = y
+        if not hasattr(self.window, 'latest_data'):
+            self.window.latest_data = {}
+            
+        self.window.latest_data[tx_mac] = {
+            'y': y,
+            'rssi': rssi,
+            'ch': ch,
+            'mot': mot
+        }
 
     ser.close()
     if mat_writer is not None:

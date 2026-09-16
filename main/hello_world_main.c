@@ -56,32 +56,23 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     if (memcmp(info->dmac, sta_mac, 6)) {
         return;
     }
-    static uint32_t prev_timestamp = 0;
-    static int s_count = 0;
     const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
 
-    if (rx_ctrl->timestamp < prev_timestamp)
-        prev_timestamp = rx_ctrl->timestamp;        
-    if (rx_ctrl->timestamp - prev_timestamp < (PERIOD_MS-25) *1000)
-        return;
-    prev_timestamp = rx_ctrl->timestamp;
 
-    //broken rx_ctrl->channel @ 5Ghz
-    uint8_t channel = 0;
-    wifi_second_chan_t second;
-    esp_wifi_get_channel(&channel, &second);
- 
+      ets_printf("CSI_DATA,%u,%d,"MACSTR","MACSTR",%d,%d,%d,%d,%u,%u,%u,%u",
+          0, rx_ctrl->rx_channel_estimate_info_vld, MAC2STR(info->mac),MAC2STR(info->dmac), rx_ctrl->rssi, rx_ctrl->rate,
+          rx_ctrl->noise_floor, rx_ctrl->channel, 0,
+          rx_ctrl->timestamp, rx_ctrl->sig_len, rx_ctrl->rx_state);
+      ets_printf(",%d,%u,\"[%d", info->len, 0, info->buf[0]);
+      for (int i = 1; i < info->len; i++) {
+          ets_printf(",%d",  info->buf[i]);
+      }
+      ets_printf("]\"\n");
 
-    ets_printf("CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d",
-            s_count++, MAC2STR(ap_bssid), rx_ctrl->rssi, rx_ctrl->rate,
-            rx_ctrl->noise_floor,  channel,
-            rx_ctrl->timestamp, rx_ctrl->sig_len, rx_ctrl->rx_state);
-    ets_printf(",%d,%d,\"[%d", info->len, rx_ctrl->rx_channel_estimate_info_vld, info->buf[0]);
 
-    for (int i = 1; i < info->len; i++) {
-        ets_printf(",%d", info->buf[i]);
-    }
-    ets_printf("]\"\n");
+
+
+   
 }
 
 // Initialize CSI collection
@@ -178,8 +169,9 @@ void wifi_init_sta() {
 
 // Task to send raw frames periodically
 void raw_frame_task(void *pvParameters) {
-    ESP_ERROR_CHECK(esp_wifi_config_80211_tx_rate(WIFI_IF_STA, WIFI_PHY_RATE_6M));
-    while (1) {
+    wifi_tx_rate_config_t config = {.phymode = WIFI_PHY_MODE_HT20, .rate = WIFI_PHY_RATE_MCS0_LGI};
+    ESP_ERROR_CHECK(esp_wifi_config_80211_tx(WIFI_IF_STA, &config));
+     while (1) {
         send_raw_frame();
         vTaskDelay(pdMS_TO_TICKS(PERIOD_MS));
     }
