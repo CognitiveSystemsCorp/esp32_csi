@@ -33,3 +33,7 @@ CSI_DATA,101,a0:36:bc:36:c7:38,-43,11,-92,11,12720300,14,0,128,1,"[0,0,0,0,0,0,0
 
 python `csi_data_parse_read.py -p PORT` can be used to visualize CSI data realtime
 
+Run 2 instances, 1 for each unique PORT.
+
+If project was flashed and run on 2 boards, each visualization instance would show 2 plots, 4 plots total. For each instance, one plot is for Access Point CSI, and one for Peer CSI. Peer is discovered automatically.
+

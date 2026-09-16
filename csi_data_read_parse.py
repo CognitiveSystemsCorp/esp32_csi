@@ -39,6 +39,28 @@ import pyqtgraph as pq
 import threading
 import time
 
+from scipy.signal import butter, filtfilt
+
+def snr_simple(csi):
+    # Design Butterworth filter (4th order, cutoff 0.3)
+    b, a = butter(4, 0.3)
+    
+    # Apply zero-phase filtering
+    csi_filt = filtfilt(b, a, csi)
+    
+    # Calculate signal and noise power
+    s = np.sum(csi_filt)
+    n = np.sum(np.abs(csi_filt - csi))
+    
+    # Compute SNR in dB
+    csi_snr = 0.0
+    if n != 0:
+        csi_snr = 10 * np.log10(s / n)
+    return csi_snr
+
+
+
+
 # Reduce displayed waveforms to avoid display freezes
 CSI_VAID_SUBCARRIER_INTERVAL = 1
 
@@ -125,6 +147,8 @@ class csi_data_graphical_window(QMainWindow):
     def update_data(self):
         for mac, data_info in list(self.latest_data.items()):
             y = data_info['y']
+
+            snr = snr_simple(y)
             rssi = data_info['rssi']
             ch = data_info['ch']
             mot = data_info['mot']
@@ -145,7 +169,7 @@ class csi_data_graphical_window(QMainWindow):
                 plot_data['last_time'] = current_time
             
             rate_str = f"{plot_data['rate']:.1f}"
-            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {rssi} dBm, Ch: {ch}, Vld: {mot}, Rate: {rate_str} Hz)")
+            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {rssi} dBm, Ch: {ch}, Vld: {mot}, Rate: {rate_str} Hz SNR= {snr:.1f} dB)")
             plot_data['plot'].setXRange(0, len(y), padding=0)
 
             H_min = float(np.min(y))
