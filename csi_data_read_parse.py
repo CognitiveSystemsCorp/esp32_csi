@@ -41,24 +41,15 @@ import time
 
 from scipy.signal import butter, filtfilt
 
-def snr_original(csi):
-    """
-    Original SNR estimation algorithm using Butterworth low-pass filtering.
-    """
+def snr_simple(csi):
     if np.iscomplexobj(csi):
         csi = np.abs(csi)
     else:
         csi = np.asarray(csi, dtype=np.float64)
-    if len(csi) < 4:
-        return 0.0
 
     # Design Butterworth filter (4th order, cutoff 0.3)
     b, a = butter(4, 0.3)
-    try:
-        csi_filt = filtfilt(b, a, csi)
-    except ValueError:
-        padlen = max(len(a), len(b))
-        csi_filt = filtfilt(b, a, csi, padlen=padlen)
+    csi_filt = filtfilt(b, a, csi)
 
     # Calculate signal and noise power
     s = np.sum(csi_filt)
@@ -70,9 +61,6 @@ def snr_original(csi):
         csi_snr = 10 * np.log10(s / n)
     return float(csi_snr)
 
-
-# snr_simple is the original algorithm (default)
-snr_simple = snr_original
 
 
 def snr_cir_delay_domain(csi, max_delay_taps=6):
@@ -134,22 +122,11 @@ def snr_mad_robust(csi):
 
 
 SNR_ALGORITHMS = {
-    'original': snr_original,
+    'simple': snr_simple,
     'cir': snr_cir_delay_domain,
     'mad': snr_mad_robust,
 }
 
-SNR_ALGO_MAP = {
-    'original': 'original',
-    'simple': 'original',
-    'default': 'original',
-    'cir': 'cir',
-    '1': 'cir',
-    'algo1': 'cir',
-    'mad': 'mad',
-    '3': 'mad',
-    'algo3': 'mad',
-}
 
 
 
@@ -185,7 +162,7 @@ CSI_DATA_INDEX = 1  # buffer size
 DATA_COLUMNS_NUM = 13
 
 class csi_data_graphical_window(QMainWindow):
-    def __init__(self, snr_algo='original'):
+    def __init__(self, snr_algo='simple'):
         super().__init__()
 
         self.snr_algo = snr_algo
@@ -461,14 +438,14 @@ if __name__ == '__main__':
                         help="Serial port number of csv_recv device")
     parser.add_argument('-s', '--store', dest='store_file', action='store',
                         help="Save the data printed by the serial port to a file")
-    parser.add_argument('--snr-algo', dest='snr_algo', default='original',
-                        choices=['original', 'cir', 'mad', '1', '3', 'simple'],
-                        help="Algorithm for CSI SNR computation: 'original' (default, snr_simple Butterworth filter), 'cir' (Algorithm 1, delay-domain IFFT), 'mad' (Algorithm 3, robust MAD)")
+    parser.add_argument('--snr-algo', dest='snr_algo', default='simple',
+                        choices=['simple', 'cir', 'mad'],
+                        help="Algorithm for CSI SNR computation: 'simple' (default, snr_simple Butterworth filter), 'cir' (Algorithm 1, delay-domain IFFT), 'mad' (Algorithm 3, robust MAD)")
 
     args = parser.parse_args()
     serial_port = args.port
     file_name = args.store_file
-    selected_algo = SNR_ALGO_MAP.get(str(args.snr_algo).lower(), 'original')
+    selected_algo = str(args.snr_algo).lower()
 
     app = QApplication(sys.argv)
 
