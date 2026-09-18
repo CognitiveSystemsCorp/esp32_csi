@@ -66,30 +66,38 @@ def snr_simple(csi):
 def snr_cir_delay_domain(csi, max_delay_taps=6):
     """
     Computes CSI SNR using CIR delay-domain noise estimation (Algorithm 1).
-    Transforms CFR to CIR via IFFT, extracts noise variance from taps beyond
-    the channel delay spread, and computes SNR in dB without distorting
-    frequency-selective multipath fading.
+    Applies frequency-domain Hann windowing to suppress sinc leakage,
+    aligns the CIR peak circularly to index 0 to eliminate packet delay offsets,
+    and estimates noise variance robustly from delay taps beyond the channel
+    delay spread using an exponential-distribution median estimator.
     """
     csi_arr = np.asarray(csi)
     n_subcarriers = len(csi_arr)
-    if n_subcarriers < 4:
+    if n_subcarriers < 8:
         return 0.0
 
-    max_taps = max(2, min(max_delay_taps, n_subcarriers // 4))
+    # 1. Apply Hann window in frequency domain to suppress Dirichlet sinc leakage
+    win = np.hanning(n_subcarriers)
+    win_scale = float(np.mean(win ** 2))
+    cir_win = np.fft.ifft(csi_arr * win)
+    cir_power_win = (np.abs(cir_win) ** 2) / win_scale
 
-    # 1. Transform Channel Frequency Response (CFR) to Channel Impulse Response (CIR)
-    cir = np.fft.ifft(csi_arr)
-    cir_power = np.abs(cir) ** 2
+    # 2. Circularly align CIR peak to index 0
+    peak_idx = int(np.argmax(cir_power_win))
+    cir_aligned = np.roll(cir_power_win, -peak_idx)
 
-    # 2. Estimate noise power from delay taps beyond channel delay spread
-    noise_taps = cir_power[max_taps:n_subcarriers - max(1, max_taps // 2)]
+    # 3. Guard window around peak (symmetric positive and negative delay margin)
+    guard_taps = max(2, min(max_delay_taps, n_subcarriers // 4))
+    noise_taps = cir_aligned[guard_taps:n_subcarriers - guard_taps]
+
     if len(noise_taps) == 0:
-        noise_taps = cir_power[max_taps:]
+        return 0.0
 
-    p_noise = float(np.mean(noise_taps)) if len(noise_taps) > 0 else 1e-12
-    p_total = float(np.mean(cir_power))
+    # 4. Robust noise power estimation for complex Gaussian noise (Exp distribution)
+    p_noise = float(np.median(noise_taps) / np.log(2.0))
+    p_total = float(np.mean(cir_power_win))
 
-    # 3. Compute signal power and SNR in dB
+    # 5. Compute signal power and SNR in dB
     p_signal = max(p_total - p_noise, 1e-12)
     p_noise = max(p_noise, 1e-12)
 
@@ -197,6 +205,7 @@ class csi_data_graphical_window(QMainWindow):
         plot_data = {
             'plot': plot,
             'curves': [],
+            'snr_history': [],
             'y_min': float('inf'),
             'y_max': float('-inf'),
             'history_size': 20,
@@ -244,8 +253,14 @@ class csi_data_graphical_window(QMainWindow):
                 plot_data['packet_count'] = 0
                 plot_data['last_time'] = current_time
             
+            history_size = plot_data['history_size']
+            plot_data.setdefault('snr_history', []).append(snr)
+            if len(plot_data['snr_history']) > history_size:
+                plot_data['snr_history'].pop(0)
+            avg_snr = float(np.mean(plot_data['snr_history']))
+
             rate_str = f"{plot_data['rate']:.1f}"
-            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {rssi} dBm, Ch: {ch}, Valid: {vld}, Rate: {rate_str} Hz SNR= {snr:.1f} dB)")
+            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {rssi} dBm, Ch: {ch}, Valid: {vld}, Rate: {rate_str} Hz Avg SNR= {avg_snr:.1f} dB)")
             plot_data['plot'].setXRange(0, len(y), padding=0)
 
             H_min = float(np.min(y))
@@ -438,7 +453,7 @@ if __name__ == '__main__':
                         help="Serial port number of csv_recv device")
     parser.add_argument('-s', '--store', dest='store_file', action='store',
                         help="Save the data printed by the serial port to a file")
-    parser.add_argument('--snr-algo', dest='snr_algo', default='simple',
+    parser.add_argument('--snr-algo', dest='snr_algo', default='cir',
                         choices=['simple', 'cir', 'mad'],
                         help="Algorithm for CSI SNR computation: 'simple' (default, snr_simple Butterworth filter), 'cir' (Algorithm 1, delay-domain IFFT), 'mad' (Algorithm 3, robust MAD)")
 
