@@ -299,6 +299,7 @@ class csi_data_graphical_window(QMainWindow):
             'plot': plot,
             'curves': [],
             'snr_history': [],
+            'rssi_history': [],
             'y_min': float('inf'),
             'y_max': float('-inf'),
             'history_size': 20,
@@ -347,13 +348,20 @@ class csi_data_graphical_window(QMainWindow):
                 plot_data['last_time'] = current_time
             
             history_size = plot_data['history_size']
+
+            plot_data.setdefault('rssi_history', []).append(rssi)
+            if len(plot_data['rssi_history']) > history_size:
+                plot_data['rssi_history'].pop(0)
+            avg_rssi = float(np.mean(plot_data['rssi_history']))
+
+
             plot_data.setdefault('snr_history', []).append(snr)
             if len(plot_data['snr_history']) > history_size:
                 plot_data['snr_history'].pop(0)
             avg_snr = float(np.mean(plot_data['snr_history']))
 
             rate_str = f"{plot_data['rate']:.1f}"
-            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {rssi} dBm, Ch: {ch}, Valid: {vld}, Rate: {rate_str} Hz Avg SNR= {avg_snr:.1f} dB)")
+            plot_data['plot'].setTitle(f"MAC: {mac} (RSSI: {avg_rssi:.1f} dBm, Ch: {ch}, Valid: {vld}, Rate: {rate_str} Hz Avg SNR= {avg_snr:.1f} dB)")
             plot_data['plot'].setXRange(0, len(y), padding=0)
 
             H_min = float(np.min(y))
