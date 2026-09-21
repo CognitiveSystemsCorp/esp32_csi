@@ -63,46 +63,6 @@ def snr_simple(csi):
 
 
 
-def snr_cir_delay_domain(csi, max_delay_taps=6):
-    """
-    Computes CSI SNR using CIR delay-domain noise estimation (Algorithm 1).
-    Applies frequency-domain Hann windowing to suppress sinc leakage,
-    aligns the CIR peak circularly to index 0 to eliminate packet delay offsets,
-    and estimates noise variance robustly from delay taps beyond the channel
-    delay spread using an exponential-distribution median estimator.
-    """
-    csi_arr = np.asarray(csi)
-    n_subcarriers = len(csi_arr)
-    if n_subcarriers < 8:
-        return 0.0
-
-    # 1. Apply Hann window in frequency domain to suppress Dirichlet sinc leakage
-    win = np.hanning(n_subcarriers)
-    win_scale = float(np.mean(win ** 2))
-    cir_win = np.fft.ifft(csi_arr * win)
-    cir_power_win = (np.abs(cir_win) ** 2) / win_scale
-
-    # 2. Circularly align CIR peak to index 0
-    peak_idx = int(np.argmax(cir_power_win))
-    cir_aligned = np.roll(cir_power_win, -peak_idx)
-
-    # 3. Guard window around peak (symmetric positive and negative delay margin)
-    guard_taps = max(2, min(max_delay_taps, n_subcarriers // 4))
-    noise_taps = cir_aligned[guard_taps:n_subcarriers - guard_taps]
-
-    if len(noise_taps) == 0:
-        return 0.0
-
-    # 4. Robust noise power estimation for complex Gaussian noise (Exp distribution)
-    p_noise = float(np.median(noise_taps) / np.log(2.0))
-    p_total = float(np.mean(cir_power_win))
-
-    # 5. Compute signal power and SNR in dB
-    p_signal = max(p_total - p_noise, 1e-12)
-    p_noise = max(p_noise, 1e-12)
-
-    return float(10.0 * np.log10(p_signal / p_noise))
-
 
 def snr_mad_robust(csi):
     """
@@ -129,9 +89,142 @@ def snr_mad_robust(csi):
     return float(10.0 * np.log10(p_signal / p_noise))
 
 
+def snr_cir(csi):
+    """Computes Channel State Information (CSI) Signal-to-Noise Ratio (SNR) in dB
+
+    using delay-domain (CIR) noise-floor estimation.
+
+    Optimized for standard IEEE 802.11 OFDM subcarrier vectors 
+
+    Key DSP Pipeline:
+      1. Frequency-domain unwindowed total power calculation.
+      2. STO (delay slope) estimation avoiding the central DC gap.
+      3. Coarse delay de-rotation to prevent phase wrapping.
+      4. 4-point cubic Lagrange interpolation across the DC hole.
+      5. Periodic 4-term Blackman-Harris windowing (-92 dB sidelobes).
+      6. IFFT to delay domain and peak circular alignment.
+      7. Asymmetric guard extraction & bottom-40% trimmed-mean noise estimation.
+
+    Parameters:
+      csi (array-like): Complex-valued 1D CSI vector of length 26 or 52.
+
+    Returns:
+      float: Estimated SNR in dB, clipped to [-10.0, 50.0] dB.
+    """
+    # -------------------------------------------------------------------------
+    # [1] Input Validation & Formatting
+    # -------------------------------------------------------------------------
+    # Ensure 1D array of single-precision complex numbers (matches embedded hardware)
+    csi = np.asarray(csi, dtype=np.complex64).squeeze()
+    n_sc = len(csi)
+    if n_sc < 8:
+        return 0.0
+
+    # -------------------------------------------------------------------------
+    # [2] Unbiased Total Power Measurement
+    # -------------------------------------------------------------------------
+    # Total received power (Signal + Noise) is calculated directly on raw frequency
+    # samples before any windowing to prevent window-induced spectral filtering bias.
+    p_total = float(np.mean(np.abs(csi) ** 2))
+
+    # -------------------------------------------------------------------------
+    # [3] Wi-Fi Subcarrier Grid & DC-Gap-Safe Delay Estimation
+    # -------------------------------------------------------------------------
+    half = n_sc // 2
+
+    # Construct symmetric subcarrier indices skipping DC (k=0):
+    # e.g., for N=52: [-26..-1, +1..+26]; for N=26: [-13..-1, +1..+13]
+    k = np.arange(-half, half)
+    k[half:] += 1
+
+    # Estimate dominant delay slope (STO) using lag-1 autocorrelation: R_1 = sum(Y[k+1] * Y[k]^*)
+    # Crucial: np.delete(..., half - 1) removes the subcarrier pair bridging across DC
+    # (-1 to +1), preventing the missing 2*Delta_f step from corrupting the delay slope.
+    lag1_pairs = csi[1:] * np.conj(csi[:-1])
+    slope = np.angle(np.sum(np.delete(lag1_pairs, half - 1)))
+
+    # -------------------------------------------------------------------------
+    # [4] Coarse Delay De-rotation & Cubic DC Reconstruction
+    # -------------------------------------------------------------------------
+    # De-rotate dominant phase slope, shifting the primary arrival to delay ~ 0.
+    # Flattening the phase ramp ensures the phase step across DC is nearly 0 rad.
+    csi_rot = csi * np.exp(-1j * slope * k)
+
+    # 4-point Cubic Lagrange interpolation for the missing DC subcarrier at k=0:
+    # Formula: H(0) = [4*(H[-1] + H[+1]) - (H[-2] + H[+2])] / 6
+    # Unlike 2-point linear averaging, cubic interpolation preserves parabolic
+    # curvature, preventing -20 dB spectral leakage spikes during deep central notches.
+    dc = (
+        4.0 * (csi_rot[half - 1] + csi_rot[half])
+        - (csi_rot[half - 2] + csi_rot[half + 1])
+    ) / 6.0
+    csi_work = np.insert(csi_rot, half, dc)  # Grid is now contiguous (length: N+1)
+
+    # -------------------------------------------------------------------------
+    # [5] Periodic 4-Term Blackman-Harris Windowing
+    # -------------------------------------------------------------------------
+    m_sc = len(csi_work)
+
+    # Important: The denominator must be m_sc (DFT-periodic), NOT m_sc - 1.
+    # Periodic cosine harmonics fall exactly on DFT bins, ensuring 0 basis leakage
+    # and providing -92 dB sidelobe attenuation to support SNRs up to 45+ dB.
+    w = 2.0 * np.pi * np.arange(m_sc) / m_sc
+    win = (
+        0.35875
+        - 0.48829 * np.cos(w)
+        + 0.14128 * np.cos(2.0 * w)
+        - 0.01168 * np.cos(3.0 * w)
+    )
+
+    # -------------------------------------------------------------------------
+    # [6] Channel Impulse Response (CIR) & Circular Peak Alignment
+    # -------------------------------------------------------------------------
+    # 1. ifftshift moves DC (index m_sc//2) to index 0 for canonical IFFT ordering.
+    # 2. IFFT transforms the windowed spectrum to the delay domain.
+    # 3. Divide by mean(win^2) to satisfy Parseval's theorem for noise variance.
+    cir_pwr = (
+        np.abs(np.fft.ifft(np.fft.ifftshift(csi_work * win))) ** 2
+        / np.mean(win**2)
+    )
+
+    # Circularly roll dominant path peak to delay tap index 0
+    cir_aligned = np.roll(cir_pwr, -int(np.argmax(cir_pwr)))
+
+    # -------------------------------------------------------------------------
+    # [7] Guard Slicing & Bottom-40% Trimmed-Mean Noise Estimation
+    # -------------------------------------------------------------------------
+    # Asymmetric guards:
+    # - Post-guard (5 or 6 taps): Covers Blackman-Harris mainlobe (+/-3 taps)
+    #   plus physical multipath delay spread (causal decay).
+    # - Pre-guard (3 or 4 taps): Covers acausal window transition leakage.
+    g_post, g_pre = (5, 3) if m_sc <= 32 else (6, 4)
+    noise = cir_aligned[g_post : m_sc - g_pre]
+
+    # Bottom 40% Trimmed Mean:
+    # Robust against late-arriving multipath outliers (e.g., TGn Model D/E).
+    # Analytic constant: For standard exponential noise Exp(1), E[X | X <= x_0.40] = 0.2337616.
+    # Dividing by 0.2337616 restores an unbiased estimate of the noise variance per tap.
+    k_trim = max(2, int(0.40 * len(noise)))
+    p_noise_tap = float(np.mean(np.sort(noise)[:k_trim]) / 0.2337616)
+
+    # Scale per-tap noise variance to total frequency-domain noise power
+    p_noise = p_noise_tap * n_sc
+
+    # -------------------------------------------------------------------------
+    # [8] Signal Power & Logarithmic SNR Calculation
+    # -------------------------------------------------------------------------
+    # Subtract noise power from total power; clamp to 1e-4 * p_total to avoid
+    # negative arguments or logarithmic infinities at very low SNR (< -10 dB).
+    p_sig = max(p_total - p_noise, 1e-4 * p_total)
+
+    # Compute SNR in dB and clip to realistic Wi-Fi receiver dynamic range
+    return float(np.clip(10.0 * np.log10(p_sig / p_noise), -10.0, 50.0))
+
+
+
 SNR_ALGORITHMS = {
     'simple': snr_simple,
-    'cir': snr_cir_delay_domain,
+    'cir': snr_cir,
     'mad': snr_mad_robust,
 }
 
